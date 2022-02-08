@@ -1,59 +1,50 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT License.
 
-#pragma once
+#include <core/providers/cpu/cpu_execution_provider.h>
 
-#include <core/session/onnxruntime_cxx_api.h>
-
+#include "ort_util.h"
 #include "ort_backends.h"
 
 namespace torch_ort {
 namespace eager {
 
+using namespace onnxruntime;
+
+
 void CreateMLValue(onnxruntime::AllocatorPtr alloc, 
                    onnxruntime::MLDataType element_type, 
                    const std::vector<int64_t>& dims, 
-                   OrtValue* p_mlvalue);
-
-void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims, OrtValue* p_mlvalue);
-
-template <typename T>
-inline void CopyVectorToTensor(onnxruntime::ORTInvoker& invoker,
-                               const T* value_ptr,
-                               int64_t size,
-                               onnxruntime::Tensor& tensor) {
-  const auto& execution_provider = invoker.GetCurrentExecutionProvider();
-
-  OrtValue* ort_value;
-  OrtMemoryInfo cpuMemoryInfo;
-
-  Ort::ThrowOnError(Ort::GetApi().CreateTensorWithDataAsOrtValue(
-    &cpuMemoryInfo,
-    const_cast<void*>(reinterpret_cast<const void*>(value_ptr)),
-    size * sizeof(T),
-    &size,
-    1,
-    Ort::TypeToTensorType<T>::type,
-    &ort_value));
-
-  ORT_THROW_IF_ERROR(execution_provider.GetDataTransfer()->CopyTensor(
-    ort_value->Get<onnxruntime::Tensor>(),
-    tensor));
+                   OrtValue* p_mlvalue) {
+  onnxruntime::TensorShape shape(dims);
+  std::unique_ptr<onnxruntime::Tensor> p_tensor = std::make_unique<onnxruntime::Tensor>(element_type,
+                                                                      shape,
+                                                                      alloc);
+  p_mlvalue->Init(p_tensor.release(),
+                  onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>(),
+                  onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>()->GetDeleteFunc());
 }
 
-// vector<bool> is specialized so we need to handle it separately
-template <>
-inline void CopyVectorToTensor<bool>(onnxruntime::ORTInvoker& /*invoker*/,
-                                     const bool* value_ptr,
-                                     int64_t size,
-                                     onnxruntime::Tensor& tensor) {
-  auto output_span = tensor.MutableDataAsSpan<bool>();
-  for (size_t i = 0, end = size; i < end; ++i) {
-    output_span[i] = value_ptr[i];
+void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims,
+  const OrtMemoryInfo& memory_info, OrtValue* p_mlvalue) {
+  onnxruntime::TensorShape shape(dims);
+  std::unique_ptr<onnxruntime::Tensor> p_tensor = std::make_unique<onnxruntime::Tensor>(element_type,
+                                                                      shape,
+                                                                      data_ptr,
+                                                                      memory_info);
+  
+  p_mlvalue->Init(p_tensor.release(),
+                  onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>(),
+                  onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>()->GetDeleteFunc());
+}
+
+std::vector<int64_t> GetStrides(gsl::span<const int64_t> shape) {
+  std::vector<int64_t> strides(shape.size(), 1);
+  for (auto i = shape.size(); i > 1; --i) {
+    strides[i - 2] = strides[i - 1] * shape[i - 1];
   }
+  return strides;
 }
-
-std::vector<int64_t> GetStrides(gsl::span<const int64_t> shape);
 
 } // namespace eager
 } // namespace torch_ort

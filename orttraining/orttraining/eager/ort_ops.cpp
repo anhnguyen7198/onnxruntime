@@ -26,7 +26,8 @@ void createInplaceOutputValue(OrtValue& input, V<int64_t> shape, OrtValue* p_mlv
   std::vector<int64_t> new_shape;
   new_shape.assign(shape.begin(), shape.end());
   CreateMLValue(input_ort_tensor->MutableDataRaw(),
-                input_ort_tensor->DataType(), new_shape, p_mlvalue);
+                input_ort_tensor->DataType(), new_shape,
+                input_ort_tensor->Location(), p_mlvalue);
 }
 
 template <typename T> 
@@ -36,7 +37,8 @@ template <>
 void createInplaceOutputValue<Vector>(OrtValue& input, Vector<int64_t> shape, OrtValue* p_mlvalue){
   auto* input_ort_tensor = input.GetMutable<onnxruntime::Tensor>();
   CreateMLValue(input_ort_tensor->MutableDataRaw(),
-                input_ort_tensor->DataType(), shape, p_mlvalue);
+                input_ort_tensor->DataType(), shape,
+                input_ort_tensor->Location(), p_mlvalue);
 }
 
 template void createInplaceOutputValue<c10::ArrayRef>(OrtValue& input, c10::ArrayRef<int64_t> shape, OrtValue* p_mlvalue);
