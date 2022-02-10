@@ -1,0 +1,159 @@
+From b71dddb58c176f5b1bf08addbcb8c3474fdc34e1 Mon Sep 17 00:00:00 2001
+From: root <root@QTM-ANHNGUYEN-1.northamerica.corp.microsoft.com>
+Date: Tue, 8 Feb 2022 15:45:30 -0800
+Subject: [PATCH] fix-ort-eager-harcoded-memory-info
+
+---
+ orttraining/orttraining/eager/ort_aten.cpp | 30 +++++++++++++++++-----
+ orttraining/orttraining/eager/ort_ops.cpp  |  8 +++---
+ orttraining/orttraining/eager/ort_ops.h    |  2 +-
+ orttraining/orttraining/eager/ort_util.cpp |  9 +++----
+ orttraining/orttraining/eager/ort_util.h   |  5 ++--
+ 5 files changed, 37 insertions(+), 17 deletions(-)
+
+diff --git a/orttraining/orttraining/eager/ort_aten.cpp b/orttraining/orttraining/eager/ort_aten.cpp
+index 4bbfc2c2d..3b50ba19f 100644
+--- a/orttraining/orttraining/eager/ort_aten.cpp
++++ b/orttraining/orttraining/eager/ort_aten.cpp
+@@ -3,6 +3,8 @@
+ 
+ #include "ort_aten.h"
+ #include "ort_tensor.h"
++#include "ort_backends.h"
++#include <core/providers/cpu/cpu_execution_provider.h>
+ #include <c10/core/TensorImpl.h>
+ #include <ATen/native/CPUFallback.h>
+ #include <ATen/InferSize.h>
+@@ -126,11 +128,27 @@ OrtValue create_ort_value(
+   }
+ 
+   OrtValue ort_tensor;
+-  CreateMLValue(
+-    tensor.data_ptr(),
+-    ort_scalar_type_from_aten(tensor.scalar_type()),
+-    tensor.sizes().vec(),
+-    &ort_tensor);
++
++  if (tensor.device().type() == at::kORT) {
++    auto allocator = invoker.GetCurrentExecutionProvider().GetAllocator(0, OrtMemTypeDefault);
++    const auto& mem_info = allocator->Info();
++    CreateMLValue(
++      tensor.data_ptr(),
++      ort_scalar_type_from_aten(tensor.scalar_type()),
++      tensor.sizes().vec(),
++      mem_info,
++      &ort_tensor);
++  } // this tensor is not an ORT tensor
++  else {
++    OrtMemoryInfo *mem_info;
++    Ort::ThrowOnError(Ort::GetApi().CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem_info));
++    CreateMLValue(
++      tensor.data_ptr(),
++      ort_scalar_type_from_aten(tensor.scalar_type()),
++      tensor.sizes().vec(),
++      *mem_info,
++      &ort_tensor);
++  }
+   return ort_tensor;
+ }
+ 
+@@ -477,4 +495,4 @@ at::Tensor& add__Tensor(
+ //#pragma endregion
+ 
+ } // namespace eager
+-} // namespace torch_ort
+\ No newline at end of file
++} // namespace torch_ort
+diff --git a/orttraining/orttraining/eager/ort_ops.cpp b/orttraining/orttraining/eager/ort_ops.cpp
+index bebd3a82f..a9459668e 100644
+--- a/orttraining/orttraining/eager/ort_ops.cpp
++++ b/orttraining/orttraining/eager/ort_ops.cpp
+@@ -26,7 +26,8 @@ void createInplaceOutputValue(OrtValue& input, V<int64_t> shape, OrtValue* p_mlv
+   std::vector<int64_t> new_shape;
+   new_shape.assign(shape.begin(), shape.end());
+   CreateMLValue(input_ort_tensor->MutableDataRaw(),
+-                input_ort_tensor->DataType(), new_shape, p_mlvalue);
++                input_ort_tensor->DataType(), new_shape,
++                input_ort_tensor->Location(), p_mlvalue);
+ }
+ 
+ template <typename T> 
+@@ -36,10 +37,11 @@ template <>
+ void createInplaceOutputValue<Vector>(OrtValue& input, Vector<int64_t> shape, OrtValue* p_mlvalue){
+   auto* input_ort_tensor = input.GetMutable<onnxruntime::Tensor>();
+   CreateMLValue(input_ort_tensor->MutableDataRaw(),
+-                input_ort_tensor->DataType(), shape, p_mlvalue);
++                input_ort_tensor->DataType(), shape,
++                input_ort_tensor->Location(), p_mlvalue);
+ }
+ 
+ template void createInplaceOutputValue<c10::ArrayRef>(OrtValue& input, c10::ArrayRef<int64_t> shape, OrtValue* p_mlvalue);
+ 
+ } // namespace eager
+-} // namespace torch_ort
+\ No newline at end of file
++} // namespace torch_ort
+diff --git a/orttraining/orttraining/eager/ort_ops.h b/orttraining/orttraining/eager/ort_ops.h
+index f8c5564a2..d3da9a714 100644
+--- a/orttraining/orttraining/eager/ort_ops.h
++++ b/orttraining/orttraining/eager/ort_ops.h
+@@ -44,4 +44,4 @@ void copy(onnxruntime::ORTInvoker& invoker,
+           const OrtValue& src, OrtValue& dst);
+ 
+ } // namespace eager
+-} // namespace torch_ort
+\ No newline at end of file
++} // namespace torch_ort
+diff --git a/orttraining/orttraining/eager/ort_util.cpp b/orttraining/orttraining/eager/ort_util.cpp
+index 8a0cd87b8..499f94786 100644
+--- a/orttraining/orttraining/eager/ort_util.cpp
++++ b/orttraining/orttraining/eager/ort_util.cpp
+@@ -25,14 +25,13 @@ void CreateMLValue(onnxruntime::AllocatorPtr alloc,
+                   onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>()->GetDeleteFunc());
+ }
+ 
+-void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims, OrtValue* p_mlvalue) {
++void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims,
++  const OrtMemoryInfo& memory_info, OrtValue* p_mlvalue) {
+   onnxruntime::TensorShape shape(dims);
+-  OrtMemoryInfo *cpu_info;
+-  Ort::ThrowOnError(Ort::GetApi().CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &cpu_info));
+   std::unique_ptr<onnxruntime::Tensor> p_tensor = std::make_unique<onnxruntime::Tensor>(element_type,
+                                                                       shape,
+                                                                       data_ptr,
+-                                                                      *cpu_info);
++                                                                      memory_info);
+   
+   p_mlvalue->Init(p_tensor.release(),
+                   onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>(),
+@@ -48,4 +47,4 @@ std::vector<int64_t> GetStrides(gsl::span<const int64_t> shape) {
+ }
+ 
+ } // namespace eager
+-} // namespace torch_ort
+\ No newline at end of file
++} // namespace torch_ort
+diff --git a/orttraining/orttraining/eager/ort_util.h b/orttraining/orttraining/eager/ort_util.h
+index cf82b4718..96b7f768f 100644
+--- a/orttraining/orttraining/eager/ort_util.h
++++ b/orttraining/orttraining/eager/ort_util.h
+@@ -15,7 +15,8 @@ void CreateMLValue(onnxruntime::AllocatorPtr alloc,
+                    const std::vector<int64_t>& dims, 
+                    OrtValue* p_mlvalue);
+ 
+-void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims, OrtValue* p_mlvalue);
++void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims, 
++  const OrtMemoryInfo& memory_info, OrtValue* p_mlvalue);
+ 
+ template <typename T>
+ inline void CopyVectorToTensor(onnxruntime::ORTInvoker& invoker,
+@@ -56,4 +57,4 @@ inline void CopyVectorToTensor<bool>(onnxruntime::ORTInvoker& /*invoker*/,
+ std::vector<int64_t> GetStrides(gsl::span<const int64_t> shape);
+ 
+ } // namespace eager
+-} // namespace torch_ort
+\ No newline at end of file
++} // namespace torch_ort
+-- 
+2.25.1
+
