@@ -26,7 +26,8 @@ void createInplaceOutputValue(OrtValue& input, V<int64_t> shape, OrtValue* p_mlv
   std::vector<int64_t> new_shape;
   new_shape.assign(shape.begin(), shape.end());
   CreateMLValue(input_ort_tensor->MutableDataRaw(),
-                input_ort_tensor->DataType(), new_shape, p_mlvalue);
+                input_ort_tensor->DataType(), new_shape,
+                input_ort_tensor->Location(), p_mlvalue);
 }
 
 template <typename T> 

@@ -25,14 +25,15 @@ void CreateMLValue(onnxruntime::AllocatorPtr alloc,
                   onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>()->GetDeleteFunc());
 }
 
-void CreateMLValue(void* data_ptr, onnxruntime::MLDataType element_type, const std::vector<int64_t>& dims, OrtValue* p_mlvalue) {
-  onnxruntime::TensorShape shape(dims);
-  OrtMemoryInfo *cpu_info;
-  Ort::ThrowOnError(Ort::GetApi().CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &cpu_info));
+void CreateMLValue(void* data_ptr, 
+                   onnxruntime::MLDataType element_type, 
+                   onnxruntime::TensorShape& shape,
+                   const OrtMemoryInfo& memory_info, 
+                   OrtValue* p_mlvalue) {
   std::unique_ptr<onnxruntime::Tensor> p_tensor = std::make_unique<onnxruntime::Tensor>(element_type,
                                                                       shape,
                                                                       data_ptr,
-                                                                      *cpu_info);
+                                                                      memory_info);
   
   p_mlvalue->Init(p_tensor.release(),
                   onnxruntime::DataTypeImpl::GetType<onnxruntime::Tensor>(),
